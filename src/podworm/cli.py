@@ -995,7 +995,8 @@ def digest(podcast: str | None, episode: str | None, limit: int, force: bool):
 @click.option("--skip-clean", is_flag=True, help="Skip cleaning audio files")
 @click.option("--no-chat", is_flag=True, help="Skip launching Claude Code at the end")
 @click.option("--obsidian", is_flag=True, help="Summarize via claude --print and save to Obsidian")
-def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obsidian: bool):
+@click.option("--email", "email_flag", is_flag=True, help="Email the summary via Gmail SMTP (needs SMTP_USER/SMTP_PASS in env)")
+def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obsidian: bool, email_flag: bool):
     """Run full daily pipeline: spotify-import → transcribe → digest → clean."""
     from datetime import date as date_type
 
@@ -1176,13 +1177,18 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
         "with key topics, main discussion points, and notable quotes with timestamps."
     )
 
-    if obsidian:
+    if obsidian or email_flag:
         summary = _claude_print(instruction, "\n---\n\n".join(parts))
-        if summary:
-            note_path = _save_obsidian_note(summary, date_filter)
-            console.print(f"  [green]Saved Obsidian note:[/green] {note_path}")
-        else:
+        if not summary:
             console.print("  [red]Failed to generate summary[/red]")
+        else:
+            if obsidian:
+                note_path = _save_obsidian_note(summary, date_filter)
+                console.print(f"  [green]Saved Obsidian note:[/green] {note_path}")
+            if email_flag:
+                if _send_email(summary, date_filter):
+                    recipient = os.environ.get("EMAIL_TO") or os.environ.get("SMTP_USER", "")
+                    console.print(f"  [green]Sent email to[/green] {recipient}")
     else:
         console.print("\n[bold]Launching Claude Code...[/bold]")
         _launch_claude(instruction, "\n---\n\n".join(parts))
@@ -1509,6 +1515,48 @@ def _claude_print(instruction: str, transcripts: str) -> str | None:
         return None
     finally:
         os.unlink(tmp.name)
+
+
+def _send_email(summary: str, date) -> bool:
+    """Email the summary via Gmail SMTP. Returns True on success."""
+    import smtplib
+    from email.message import EmailMessage
+
+    user = os.environ.get("SMTP_USER")
+    password = os.environ.get("SMTP_PASS")
+    if not user or not password:
+        console.print(
+            "[red]Email send skipped:[/red] SMTP_USER / SMTP_PASS not set. "
+            "Generate a Gmail app password at https://myaccount.google.com/apppasswords"
+        )
+        return False
+
+    from markdown_it import MarkdownIt
+
+    html_body = MarkdownIt("commonmark").render(summary)
+    html_doc = (
+        "<!doctype html><html><body style=\""
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "max-width:640px;line-height:1.5\">"
+        f"{html_body}</body></html>"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = f"🎧 Podcast digest {date.isoformat()}"
+    msg["From"] = user
+    msg["To"] = os.environ.get("EMAIL_TO") or user
+    msg.set_content(summary)
+    msg.add_alternative(html_doc, subtype="html")
+
+    try:
+        with console.status("Sending email…", spinner="dots"):
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
+                s.login(user, password)
+                s.send_message(msg)
+        return True
+    except (smtplib.SMTPException, OSError) as e:
+        console.print(f"[red]Email send failed:[/red] {e}")
+        return False
 
 
 def _save_obsidian_note(summary: str, date) -> Path:
