@@ -1554,14 +1554,35 @@ def _send_email(summary: str, date) -> bool:
     msg.set_content(summary)
     msg.add_alternative(html_doc, subtype="html")
 
+    import socket
+
+    class _SMTP_SSL_v4(smtplib.SMTP_SSL):
+        """SMTP_SSL that forces IPv4. Cron environments often have a dead
+        IPv6 path that hangs the full timeout before falling back to v4."""
+
+        def _get_socket(self, host, port, timeout):
+            last_err: Exception | None = None
+            for af, socktype, proto, _, sa in socket.getaddrinfo(
+                host, port, socket.AF_INET, socket.SOCK_STREAM
+            ):
+                sock = socket.socket(af, socktype, proto)
+                try:
+                    sock.settimeout(timeout)
+                    sock.connect(sa)
+                    return self.context.wrap_socket(sock, server_hostname=host)
+                except OSError as e:
+                    last_err = e
+                    sock.close()
+            raise last_err or OSError(f"No IPv4 address for {host}")
+
     try:
         with console.status("Sending email…", spinner="dots"):
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=120) as s:
+            with _SMTP_SSL_v4("smtp.gmail.com", 465, timeout=120) as s:
                 s.login(user, password)
                 s.send_message(msg)
         return True
     except (smtplib.SMTPException, OSError) as e:
-        console.print(f"[red]Email send failed:[/red] {e}")
+        console.print(f"[red]Email send failed:[/red] {type(e).__name__}: {e}")
         return False
 
 
