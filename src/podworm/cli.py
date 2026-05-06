@@ -1556,9 +1556,9 @@ def _send_email(summary: str, date) -> bool:
 
     import socket
 
-    class _SMTP_SSL_v4(smtplib.SMTP_SSL):
-        """SMTP_SSL that forces IPv4. Cron environments often have a dead
-        IPv6 path that hangs the full timeout before falling back to v4."""
+    class _SMTP_v4(smtplib.SMTP):
+        """SMTP that forces IPv4. Cron environments often have a dead IPv6
+        path that hangs the full timeout before falling back to v4."""
 
         def _get_socket(self, host, port, timeout):
             last_err: Exception | None = None
@@ -1569,7 +1569,7 @@ def _send_email(summary: str, date) -> bool:
                 try:
                     sock.settimeout(timeout)
                     sock.connect(sa)
-                    return self.context.wrap_socket(sock, server_hostname=host)
+                    return sock
                 except OSError as e:
                     last_err = e
                     sock.close()
@@ -1577,7 +1577,8 @@ def _send_email(summary: str, date) -> bool:
 
     try:
         with console.status("Sending email…", spinner="dots"):
-            with _SMTP_SSL_v4("smtp.gmail.com", 465, timeout=120) as s:
+            with _SMTP_v4("smtp.gmail.com", 587, timeout=120) as s:
+                s.starttls()
                 s.login(user, password)
                 s.send_message(msg)
         return True
