@@ -1556,7 +1556,7 @@ def _send_email(summary: str, date) -> bool:
 
     try:
         with console.status("Sending email…", spinner="dots"):
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=120) as s:
                 s.login(user, password)
                 s.send_message(msg)
         return True
