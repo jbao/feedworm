@@ -1481,6 +1481,11 @@ def copy(episode_id: str, clipboard: bool, show_digest: bool):
         click.echo(content)
 
 
+def _claude_bin() -> str:
+    """Resolve the claude binary. Honors $CLAUDE_BIN, else falls back to PATH."""
+    return os.environ.get("CLAUDE_BIN") or "claude"
+
+
 def _claude_print(instruction: str, transcripts: str) -> str | None:
     """Run claude --print non-interactively and return the summary text."""
     tmp = tempfile.NamedTemporaryFile(
@@ -1492,8 +1497,9 @@ def _claude_print(instruction: str, transcripts: str) -> str | None:
         with console.status(
             "Generating summary via claude --print…", spinner="dots"
         ):
+            claude = _claude_bin()
             result = subprocess.run(
-                ["claude", "--print", "--append-system-prompt-file", tmp.name,
+                [claude, "--print", "--append-system-prompt-file", tmp.name,
                  instruction],
                 capture_output=True,
                 text=True,
@@ -1588,8 +1594,9 @@ def _launch_claude(instruction: str, transcripts: str) -> None:
     tmp.write(transcripts)
     tmp.close()
     try:
-        os.execvp("claude", ["claude", "--append-system-prompt-file", tmp.name,
-                             instruction])
+        claude = _claude_bin()
+        os.execvp(claude, [claude, "--append-system-prompt-file", tmp.name,
+                           instruction])
     except FileNotFoundError:
         os.unlink(tmp.name)
         console.print(
