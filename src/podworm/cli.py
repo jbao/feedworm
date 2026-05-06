@@ -1523,6 +1523,28 @@ def _claude_print(instruction: str, transcripts: str) -> str | None:
         os.unlink(tmp.name)
 
 
+def _render_summary_html(summary: str) -> str:
+    """Render a markdown summary into a full HTML document for email.
+
+    Uses markdown-it-py's "default" preset (commonmark + tables + strikethrough)
+    and wraps the body with email-friendly inline styles.
+    """
+    from markdown_it import MarkdownIt
+
+    body = MarkdownIt("default").render(summary)
+    return (
+        "<!doctype html><html><head><style>"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "max-width:640px;line-height:1.5}"
+        "table{border-collapse:collapse;margin:1em 0}"
+        "th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}"
+        "th{background:#f4f4f4}"
+        "code{background:#f4f4f4;padding:1px 4px;border-radius:3px}"
+        "</style></head><body>"
+        f"{body}</body></html>"
+    )
+
+
 def _send_email(summary: str, date) -> bool:
     """Email the summary via Gmail SMTP. Returns True on success."""
     import smtplib
@@ -1537,15 +1559,7 @@ def _send_email(summary: str, date) -> bool:
         )
         return False
 
-    from markdown_it import MarkdownIt
-
-    html_body = MarkdownIt("commonmark").render(summary)
-    html_doc = (
-        "<!doctype html><html><body style=\""
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
-        "max-width:640px;line-height:1.5\">"
-        f"{html_body}</body></html>"
-    )
+    html_doc = _render_summary_html(summary)
 
     msg = EmailMessage()
     msg["Subject"] = f"🎧 Podcast digest {date.isoformat()}"

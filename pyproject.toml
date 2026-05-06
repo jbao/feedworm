@@ -20,5 +20,10 @@ dependencies = [
 [project.scripts]
 podworm = "podworm.cli:cli"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
 [tool.uv]
 package = true
