@@ -24,13 +24,15 @@ def get_client() -> DeepgramClient:
 def detect_language(text: str) -> str | None:
     """Heuristic language detection from text. Returns a Deepgram language code.
 
-    None means "let Deepgram auto-detect". Counts Unicode ranges for the major
-    scripts we encounter; thresholds are intentionally loose because podcast
-    metadata routinely mixes scripts (English brand names in a Chinese show).
+    Only returns a code for non-Latin scripts (CJK / Japanese / Korean) where
+    Deepgram's `detect_language=True` is unreliable. For Latin-script content
+    (English, German, French, Spanish, …) returns None so Deepgram auto-detects;
+    Latin-script languages share an alphabet, so we can't distinguish them with
+    Unicode-range counts and would mis-tag German as English otherwise.
     """
     if not text:
         return None
-    cjk = hira_kata = hangul = latin = 0
+    cjk = hira_kata = hangul = 0
     for ch in text:
         cp = ord(ch)
         if 0x4E00 <= cp <= 0x9FFF:
@@ -39,16 +41,12 @@ def detect_language(text: str) -> str | None:
             hira_kata += 1
         elif 0xAC00 <= cp <= 0xD7AF:
             hangul += 1
-        elif (0x41 <= cp <= 0x5A) or (0x61 <= cp <= 0x7A):
-            latin += 1
     if hira_kata >= 10:
         return "ja"
     if hangul >= 10:
         return "ko"
     if cjk >= 20:
         return "zh"
-    if latin >= 50:
-        return "en"
     return None
 
 
