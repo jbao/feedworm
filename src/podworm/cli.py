@@ -1067,6 +1067,50 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
         except Exception as e:
             console.print(f"  [red]Spotify import failed: {e}[/red]")
 
+    # --- Step 1.5: Email import ---
+    console.print(f"\n[bold]Step 1.5: Importing from email (date={date_filter})...[/bold]")
+
+    from podworm.config import (
+        get_imap_host,
+        get_imap_user,
+        get_imap_password,
+        get_email_allowed_sender,
+    )
+    from podworm.email_import import import_from_email
+
+    imap_user = get_imap_user()
+    imap_password = get_imap_password()
+    if not imap_user or not imap_password:
+        console.print("  [yellow]Skipping: IMAP credentials not configured[/yellow]")
+    else:
+        try:
+            email_results = import_from_email(
+                db,
+                on_date=date_filter,
+                host=get_imap_host(),
+                user=imap_user,
+                password=imap_password,
+                allowed_sender=get_email_allowed_sender(),
+            )
+            if not email_results:
+                console.print("  [dim]No matching emails found[/dim]")
+            else:
+                queued = 0
+                colors = {"queued": "green", "dup": "dim", "error": "red", "no-url": "yellow"}
+                for r in email_results:
+                    color = colors.get(r.status, "white")
+                    console.print(
+                        f"  [{color}]{r.status:7}[/{color}] {r.subject[:50]}  {r.detail}"
+                    )
+                    if r.episode:
+                        to_download_eps.append(r.episode)
+                        if r.status == "queued":
+                            queued += 1
+                console.print(f"  [green]Imported {queued} new episodes[/green]")
+        except Exception as e:
+            console.print(f"  [red]Email import failed: {type(e).__name__}: {e}[/red]")
+            console.print_exception(show_locals=False)
+
     # Download newly imported episodes
     if to_download_eps:
         console.print(f"\n  [bold]Downloading {len(to_download_eps)} episodes...[/bold]")

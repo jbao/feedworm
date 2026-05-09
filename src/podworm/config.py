@@ -54,6 +54,26 @@ def get_spotify_cache_path() -> Path:
     return get_data_dir() / ".spotify_token_cache"
 
 
+def get_imap_host() -> str:
+    """Get the IMAP host (defaults to iCloud Mail)."""
+    return os.environ.get("IMAP_HOST", "imap.mail.me.com")
+
+
+def get_imap_user() -> str | None:
+    """Get the IMAP username (the assistant inbox address)."""
+    return os.environ.get("IMAP_USER")
+
+
+def get_imap_password() -> str | None:
+    """Get the IMAP password (Apple ID app-specific password for iCloud Mail)."""
+    return os.environ.get("IMAP_PASSWORD")
+
+
+def get_email_allowed_sender() -> str:
+    """Get the only sender whose forwards are ingested."""
+    return os.environ.get("EMAIL_ALLOWED_SENDER", "jie.bao@gmail.com")
+
+
 def get_interviews_dir() -> Path:
     """Get the directory for interview transcripts."""
     return get_data_dir() / "interviews"
