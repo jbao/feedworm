@@ -1,17 +1,26 @@
-"""Configuration management for podworm."""
+"""Configuration management for feedworm."""
 
 import os
 from pathlib import Path
 
 
 def get_data_dir() -> Path:
-    """Get the data directory for podworm."""
-    # Check environment variable first
-    if env_dir := os.environ.get("PODWORM_DATA_DIR"):
+    """Get the data directory for feedworm.
+
+    Honors FEEDWORM_DATA_DIR (or the legacy PODWORM_DATA_DIR). When neither is
+    set, prefers ~/.local/share/feedworm but falls back to the pre-rename
+    ~/.local/share/podworm if it exists, so existing data isn't orphaned.
+    """
+    if env_dir := (
+        os.environ.get("FEEDWORM_DATA_DIR") or os.environ.get("PODWORM_DATA_DIR")
+    ):
         return Path(env_dir).expanduser()
 
-    # Default to ~/.local/share/podworm
-    return Path.home() / ".local" / "share" / "podworm"
+    new_dir = Path.home() / ".local" / "share" / "feedworm"
+    legacy_dir = Path.home() / ".local" / "share" / "podworm"
+    if not new_dir.exists() and legacy_dir.exists():
+        return legacy_dir
+    return new_dir
 
 
 def get_audio_dir() -> Path:
@@ -74,6 +83,11 @@ def get_email_allowed_sender() -> str:
     return os.environ.get("EMAIL_ALLOWED_SENDER", "jie.bao@gmail.com")
 
 
+def get_email_article_subject() -> str:
+    """Get the subject keyword that marks an email as carrying article links."""
+    return os.environ.get("EMAIL_ARTICLE_SUBJECT", "read")
+
+
 def get_interviews_dir() -> Path:
     """Get the directory for interview transcripts."""
     return get_data_dir() / "interviews"
@@ -81,7 +95,10 @@ def get_interviews_dir() -> Path:
 
 def get_obsidian_vault_dir() -> Path:
     """Get the Obsidian vault directory."""
-    if env_dir := os.environ.get("PODWORM_OBSIDIAN_VAULT"):
+    if env_dir := (
+        os.environ.get("FEEDWORM_OBSIDIAN_VAULT")
+        or os.environ.get("PODWORM_OBSIDIAN_VAULT")
+    ):
         return Path(env_dir).expanduser()
     return Path.home() / "Documents" / "obsidian" / "Personal" / "2 - Areas"
 

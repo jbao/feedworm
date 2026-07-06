@@ -1,7 +1,7 @@
 [project]
-name = "podworm"
+name = "feedworm"
 version = "0.1.0"
-description = "Download and transcribe podcasts from 小宇宙 (Xiaoyuzhou) and Spotify"
+description = "Digest podcasts (小宇宙/Spotify) and articles into daily summaries"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -15,10 +15,11 @@ dependencies = [
     "sqlite-utils>=3.39",
     "edge-tts>=7.2.7",
     "python-dotenv>=1.0.0",
+    "trafilatura>=1.12.0",
 ]
 
 [project.scripts]
-podworm = "podworm.cli:cli"
+feedworm = "feedworm.cli:cli"
 
 [project.optional-dependencies]
 dev = [

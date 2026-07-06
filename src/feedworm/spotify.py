@@ -12,13 +12,13 @@ import httpx
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-from podworm.config import (
+from feedworm.config import (
     get_spotify_client_id,
     get_spotify_client_secret,
     get_spotify_cache_path,
     ensure_dirs,
 )
-from podworm.database import Database, Podcast, Episode
+from feedworm.database import Database, Source, Content
 
 
 SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
@@ -208,16 +208,16 @@ class MatchResult:
     """Result of matching a Spotify episode to an RSS episode."""
 
     spotify_episode: SpotifyEpisode
-    rss_episode: Episode | None
-    podcast: Podcast | None
+    rss_episode: Content | None
+    podcast: Source | None
     score: float
     matched: bool
 
 
 def match_episode_to_rss(
     sp_ep: SpotifyEpisode,
-    rss_episodes: list[Episode],
-) -> tuple[Episode | None, float]:
+    rss_episodes: list[Content],
+) -> tuple[Content | None, float]:
     """Match a Spotify episode to the best RSS episode.
 
     Uses title similarity (0.7 weight) + date proximity (0.3 weight).
@@ -252,7 +252,7 @@ def resolve_spotify_episodes(
 
     Groups episodes by show, looks up RSS feeds, and matches episodes.
     """
-    from podworm.feed_parser import fetch_episodes as fetch_rss_episodes
+    from feedworm.feed_parser import fetch_episodes as fetch_rss_episodes
 
     # Group by show
     shows: dict[str, list[SpotifyEpisode]] = {}
@@ -282,10 +282,10 @@ def resolve_spotify_episodes(
 
         # Build podcast object
         podcast_id = _podcast_id_from_feed_url(feed_url)
-        podcast = Podcast(
+        podcast = Source(
             id=podcast_id,
             title=show_name,
-            feed_url=feed_url,
+            url=feed_url,
         )
 
         # Fetch RSS episodes

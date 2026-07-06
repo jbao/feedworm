@@ -1,4 +1,4 @@
-"""Command-line interface for podworm."""
+"""Command-line interface for feedworm."""
 
 import os
 import subprocess
@@ -14,9 +14,9 @@ from rich.console import Console
 load_dotenv()
 from rich.table import Table
 
-from podworm.config import get_interviews_dir, get_transcripts_dir
-from podworm.database import Database, Podcast
-from podworm.feed_parser import (
+from feedworm.config import get_interviews_dir, get_transcripts_dir
+from feedworm.database import Database
+from feedworm.feed_parser import (
     parse_opml,
     fetch_podcast_info,
     fetch_episodes,
@@ -25,9 +25,9 @@ from podworm.feed_parser import (
     scrape_podcast_page,
     search_xiaoyuzhou,
 )
-from podworm.digest import digest_episodes
-from podworm.downloader import download_episodes_sync
-from podworm.transcriber import transcribe_episodes
+from feedworm.digest import digest_content
+from feedworm.downloader import download_episodes_sync
+from feedworm.transcriber import transcribe_episodes
 
 console = Console()
 
@@ -59,12 +59,12 @@ def import_opml(opml_path: Path):
         try:
             # Fetch full podcast info from RSS
             podcast = fetch_podcast_info(feed_url)
-            db.add_podcast(podcast)
+            db.add_source(podcast)
 
             # Fetch episodes
             episodes = fetch_episodes(feed_url, podcast_id)
             for episode in episodes:
-                db.add_episode(episode)
+                db.add_content(episode)
 
             console.print(f"    [green]✓[/green] {podcast.title} ({len(episodes)} episodes)")
         except Exception as e:
@@ -89,11 +89,11 @@ def add(url: str):
 
     try:
         podcast = fetch_podcast_info(feed_url)
-        db.add_podcast(podcast)
+        db.add_source(podcast)
 
         episodes = fetch_episodes(feed_url, podcast_id)
         for episode in episodes:
-            db.add_episode(episode)
+            db.add_content(episode)
 
         console.print(f"[green]✓[/green] Added: {podcast.title} ({len(episodes)} episodes)")
     except Exception as e:
@@ -102,13 +102,13 @@ def add(url: str):
 
 
 @cli.command("list")
-def list_podcasts():
+def list_sources():
     """List all subscribed podcasts."""
     db = Database()
-    podcasts = db.list_podcasts()
+    podcasts = db.list_sources()
 
     if not podcasts:
-        console.print("[yellow]No podcasts found. Use 'podworm import' or 'podworm add' to add podcasts.[/yellow]")
+        console.print("[yellow]No podcasts found. Use 'feedworm import' or 'feedworm add' to add podcasts.[/yellow]")
         return
 
     table = Table(title="Subscribed Podcasts")
@@ -118,8 +118,8 @@ def list_podcasts():
     table.add_column("Transcribed", justify="right")
 
     for podcast in podcasts:
-        total = db.count_episodes(podcast.id)
-        transcribed = db.count_transcribed(podcast.id)
+        total = db.count_content(podcast.id)
+        transcribed = db.count_with_text(podcast.id)
         table.add_row(
             podcast.id[:12] + "...",
             podcast.title,
@@ -137,7 +137,7 @@ def episodes(podcast_id: str):
     db = Database()
 
     # Find podcast by ID prefix
-    podcasts = db.list_podcasts()
+    podcasts = db.list_sources()
     podcast = next(
         (p for p in podcasts if p.id.startswith(podcast_id)),
         None
@@ -147,7 +147,7 @@ def episodes(podcast_id: str):
         console.print(f"[red]Podcast not found: {podcast_id}[/red]")
         sys.exit(1)
 
-    eps = db.list_episodes(podcast.id)
+    eps = db.list_content(podcast.id)
 
     table = Table(title=f"Episodes: {podcast.title}")
     table.add_column("ID", style="dim", max_width=15)
@@ -158,8 +158,8 @@ def episodes(podcast_id: str):
 
     for ep in eps:
         date_str = ep.published_at.strftime("%Y-%m-%d") if ep.published_at else ""
-        downloaded = "[green]✓[/green]" if ep.downloaded_at else ""
-        transcribed = "[green]✓[/green]" if ep.transcribed_at else ""
+        downloaded = "[green]✓[/green]" if ep.acquired_at else ""
+        transcribed = "[green]✓[/green]" if ep.text_ready_at else ""
         table.add_row(
             ep.id[:12] + "...",
             ep.title[:50],
@@ -179,19 +179,19 @@ def sync(podcast: str | None, limit: int):
     db = Database()
 
     # First, refresh episode lists from RSS
-    podcasts = db.list_podcasts()
+    podcasts = db.list_sources()
     if podcast:
         podcasts = [p for p in podcasts if p.id.startswith(podcast)]
 
     console.print("[bold]Refreshing episode lists...[/bold]")
     for p in podcasts:
         try:
-            episodes = fetch_episodes(p.feed_url, p.id)
+            episodes = fetch_episodes(p.url, p.id)
             new_count = 0
             for ep in episodes:
-                existing = db.get_episode(ep.id)
+                existing = db.get_content(ep.id)
                 if not existing:
-                    db.add_episode(ep)
+                    db.add_content(ep)
                     new_count += 1
             if new_count:
                 console.print(f"  [green]✓[/green] {p.title}: {new_count} new episodes")
@@ -201,12 +201,12 @@ def sync(podcast: str | None, limit: int):
     # Get episodes to download
     if podcast:
         # Filter by podcast
-        all_to_download = db.list_episodes_to_download()
+        all_to_download = db.list_content_to_download()
         podcasts_to_sync = [p for p in podcasts if p.id.startswith(podcast)]
         podcast_ids = {p.id for p in podcasts_to_sync}
-        to_download = [e for e in all_to_download if e.podcast_id in podcast_ids][:limit]
+        to_download = [e for e in all_to_download if e.source_id in podcast_ids][:limit]
     else:
-        to_download = db.list_episodes_to_download(limit=limit)
+        to_download = db.list_content_to_download(limit=limit)
 
     if not to_download:
         console.print("[yellow]No new episodes to download.[/yellow]")
@@ -218,7 +218,7 @@ def sync(podcast: str | None, limit: int):
     success_count = 0
     for episode, path, error in results:
         if path:
-            db.mark_episode_downloaded(episode.id, str(path))
+            db.mark_content_acquired(episode.id, str(path))
             success_count += 1
         else:
             console.print(f"  [red]✗[/red] {episode.title}: {error}")
@@ -236,43 +236,43 @@ def transcribe(podcast: str | None, episode: str | None, limit: int):
 
     if episode:
         # Transcribe specific episode
-        ep = db.get_episode(episode)
+        ep = db.get_content(episode)
         if not ep:
             # Try prefix match
-            all_eps = db.list_episodes()
+            all_eps = db.list_content()
             ep = next((e for e in all_eps if e.id.startswith(episode)), None)
 
         if not ep:
             console.print(f"[red]Episode not found: {episode}[/red]")
             sys.exit(1)
 
-        if not ep.audio_path:
-            console.print(f"[red]Episode not downloaded yet. Run 'podworm sync' first.[/red]")
+        if not ep.media_path:
+            console.print(f"[red]Episode not downloaded yet. Run 'feedworm sync' first.[/red]")
             sys.exit(1)
 
-        p = db.get_podcast(ep.podcast_id)
+        p = db.get_source(ep.source_id)
         to_transcribe = [(ep, p)]
     else:
         # Get episodes to transcribe
-        all_to_transcribe = db.list_episodes_to_transcribe(limit=limit)
+        all_to_transcribe = db.list_content_to_transcribe(limit=limit)
 
         if podcast:
-            podcasts = db.list_podcasts()
+            podcasts = db.list_sources()
             podcast_match = next(
                 (p for p in podcasts if p.id.startswith(podcast)),
                 None
             )
             if podcast_match:
-                all_to_transcribe = [e for e in all_to_transcribe if e.podcast_id == podcast_match.id]
+                all_to_transcribe = [e for e in all_to_transcribe if e.source_id == podcast_match.id]
 
         to_transcribe = []
         for ep in all_to_transcribe:
-            p = db.get_podcast(ep.podcast_id)
+            p = db.get_source(ep.source_id)
             if p:
                 to_transcribe.append((ep, p))
 
     if not to_transcribe:
-        console.print("[yellow]No episodes to transcribe. Download episodes first with 'podworm sync'.[/yellow]")
+        console.print("[yellow]No episodes to transcribe. Download episodes first with 'feedworm sync'.[/yellow]")
         return
 
     console.print(f"[bold]Transcribing {len(to_transcribe)} episodes...[/bold]")
@@ -281,7 +281,7 @@ def transcribe(podcast: str | None, episode: str | None, limit: int):
     success_count = 0
     for ep, path, error in results:
         if path:
-            db.mark_episode_transcribed(ep.id, str(path))
+            db.mark_content_text(ep.id, str(path))
             success_count += 1
             console.print(f"  [green]✓[/green] {ep.title}")
         else:
@@ -297,18 +297,18 @@ def show(episode_id: str):
     db = Database()
 
     # Find episode
-    all_eps = db.list_episodes()
+    all_eps = db.list_content()
     episode = next((e for e in all_eps if e.id.startswith(episode_id)), None)
 
     if not episode:
         console.print(f"[red]Episode not found: {episode_id}[/red]")
         sys.exit(1)
 
-    if not episode.transcript_path:
-        console.print(f"[yellow]Episode not transcribed yet. Run 'podworm transcribe' first.[/yellow]")
+    if not episode.text_path:
+        console.print(f"[yellow]Episode not transcribed yet. Run 'feedworm transcribe' first.[/yellow]")
         sys.exit(1)
 
-    transcript_path = Path(episode.transcript_path)
+    transcript_path = Path(episode.text_path)
     if not transcript_path.exists():
         console.print(f"[red]Transcript file not found: {transcript_path}[/red]")
         sys.exit(1)
@@ -324,18 +324,18 @@ def open_transcript(episode_id: str):
     db = Database()
 
     # Find episode
-    all_eps = db.list_episodes()
+    all_eps = db.list_content()
     episode = next((e for e in all_eps if e.id.startswith(episode_id)), None)
 
     if not episode:
         console.print(f"[red]Episode not found: {episode_id}[/red]")
         sys.exit(1)
 
-    if not episode.transcript_path:
-        console.print(f"[yellow]Episode not transcribed yet. Run 'podworm transcribe' first.[/yellow]")
+    if not episode.text_path:
+        console.print(f"[yellow]Episode not transcribed yet. Run 'feedworm transcribe' first.[/yellow]")
         sys.exit(1)
 
-    transcript_path = Path(episode.transcript_path)
+    transcript_path = Path(episode.text_path)
     if not transcript_path.exists():
         console.print(f"[red]Transcript file not found: {transcript_path}[/red]")
         sys.exit(1)
@@ -402,16 +402,16 @@ def auto(limit: int, force: bool):
 
     # Sync
     console.print("[bold]Step 1: Syncing episodes...[/bold]")
-    podcasts = db.list_podcasts()
+    podcasts = db.list_sources()
 
     for p in podcasts:
         try:
-            episodes = fetch_episodes(p.feed_url, p.id)
+            episodes = fetch_episodes(p.url, p.id)
             new_count = 0
             for ep in episodes:
-                existing = db.get_episode(ep.id)
+                existing = db.get_content(ep.id)
                 if not existing:
-                    db.add_episode(ep)
+                    db.add_content(ep)
                     new_count += 1
             if new_count:
                 console.print(f"  [green]✓[/green] {p.title}: {new_count} new")
@@ -420,13 +420,13 @@ def auto(limit: int, force: bool):
 
     # Download
     console.print("\n[bold]Step 2: Downloading episodes...[/bold]")
-    to_download = db.list_episodes_to_download(limit=limit)
+    to_download = db.list_content_to_download(limit=limit)
 
     if to_download:
         results = download_episodes_sync(to_download)
         for episode, path, error in results:
             if path:
-                db.mark_episode_downloaded(episode.id, str(path))
+                db.mark_content_acquired(episode.id, str(path))
                 console.print(f"  [green]✓[/green] Downloaded: {episode.title[:40]}...")
             else:
                 console.print(f"  [red]✗[/red] {episode.title[:40]}: {error}")
@@ -435,19 +435,19 @@ def auto(limit: int, force: bool):
 
     # Transcribe
     console.print("\n[bold]Step 3: Transcribing episodes...[/bold]")
-    to_transcribe_list = db.list_episodes_to_transcribe(limit=limit)
+    to_transcribe_list = db.list_content_to_transcribe(limit=limit)
 
     if to_transcribe_list:
         to_transcribe = []
         for ep in to_transcribe_list:
-            p = db.get_podcast(ep.podcast_id)
+            p = db.get_source(ep.source_id)
             if p:
                 to_transcribe.append((ep, p))
 
         results = transcribe_episodes(to_transcribe)
         for ep, path, error in results:
             if path:
-                db.mark_episode_transcribed(ep.id, str(path))
+                db.mark_content_text(ep.id, str(path))
                 console.print(f"  [green]✓[/green] Transcribed: {ep.title[:40]}...")
             else:
                 console.print(f"  [red]✗[/red] {ep.title[:40]}: {error}")
@@ -471,9 +471,9 @@ def grab(podcast_name: str, episode_keyword: str):
 
     Examples:
 
-        podworm grab 日谈公园 vol.400
+        feedworm grab 日谈公园 vol.400
 
-        podworm grab "不开玩笑" "229"
+        feedworm grab "不开玩笑" "229"
     """
     db = Database()
     query = f"{podcast_name} {episode_keyword}"
@@ -532,17 +532,17 @@ def grab(podcast_name: str, episode_keyword: str):
         console.print("[dim]Try a more specific search term.[/dim]")
         sys.exit(1)
 
-    if not episode.audio_url:
+    if not episode.url:
         console.print("[red]Episode has no audio URL.[/red]")
         sys.exit(1)
 
     console.print(f"\n[bold green]Episode:[/bold green] {episode.title}")
     console.print(f"[bold green]Podcast:[/bold green] {podcast.title}")
-    console.print(f"[bold green]Audio:[/bold green] {episode.audio_url}")
+    console.print(f"[bold green]Audio:[/bold green] {episode.url}")
 
     # Save to database
-    db.add_podcast(podcast)
-    db.add_episode(episode)
+    db.add_source(podcast)
+    db.add_content(episode)
 
     # Download
     console.print(f"\n[bold]Downloading...[/bold]")
@@ -550,7 +550,7 @@ def grab(podcast_name: str, episode_keyword: str):
 
     for ep, path, error in results:
         if path:
-            db.mark_episode_downloaded(ep.id, str(path))
+            db.mark_content_acquired(ep.id, str(path))
             console.print(f"[green]Saved to: {path}[/green]")
         else:
             console.print(f"[red]Download failed: {error}[/red]")
@@ -560,8 +560,8 @@ def grab(podcast_name: str, episode_keyword: str):
 @cli.command("spotify-login")
 def spotify_login_cmd():
     """Authenticate with Spotify (opens browser for OAuth)."""
-    from podworm.config import get_spotify_client_id, get_spotify_client_secret
-    from podworm.spotify import spotify_login
+    from feedworm.config import get_spotify_client_id, get_spotify_client_secret
+    from feedworm.spotify import spotify_login
 
     if not get_spotify_client_id() or not get_spotify_client_secret():
         console.print(
@@ -590,8 +590,8 @@ def spotify_import_cmd(limit: int, date_str: str | None, download: bool, dry_run
     """Import podcast episodes from Spotify saved episodes."""
     from datetime import date as date_type
 
-    from podworm.config import get_spotify_client_id, get_spotify_client_secret
-    from podworm.spotify import (
+    from feedworm.config import get_spotify_client_id, get_spotify_client_secret
+    from feedworm.spotify import (
         get_spotify_client,
         fetch_saved_episodes,
         resolve_spotify_episodes,
@@ -602,7 +602,7 @@ def spotify_import_cmd(limit: int, date_str: str | None, download: bool, dry_run
     if not get_spotify_client_id() or not get_spotify_client_secret():
         console.print(
             "[red]Error:[/red] Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET.\n"
-            "[dim]Run 'podworm spotify-login' first.[/dim]"
+            "[dim]Run 'feedworm spotify-login' first.[/dim]"
         )
         sys.exit(1)
 
@@ -620,7 +620,7 @@ def spotify_import_cmd(limit: int, date_str: str | None, download: bool, dry_run
         sp = get_spotify_client()
         sp.current_user()  # verify auth works
     except Exception as e:
-        console.print(f"[red]Spotify auth failed:[/red] {e}\n[dim]Run 'podworm spotify-login' first.[/dim]")
+        console.print(f"[red]Spotify auth failed:[/red] {e}\n[dim]Run 'feedworm spotify-login' first.[/dim]")
         sys.exit(1)
 
     # Fetch saved episodes
@@ -690,8 +690,8 @@ def spotify_import_cmd(limit: int, date_str: str | None, download: bool, dry_run
 
         if not dry_run:
             # Save podcast and episode to DB
-            db.add_podcast(result.podcast)
-            db.add_episode(result.rss_episode)
+            db.add_source(result.podcast)
+            db.add_content(result.rss_episode)
             record_spotify_mapping(db, sp_ep.spotify_id, result.rss_episode.id)
             imported += 1
             to_download_eps.append(result.rss_episode)
@@ -718,12 +718,12 @@ def spotify_import_cmd(limit: int, date_str: str | None, download: bool, dry_run
 
         for episode, path, error in results:
             if path:
-                db.mark_episode_downloaded(episode.id, str(path))
+                db.mark_content_acquired(episode.id, str(path))
                 console.print(f"  [green]✓[/green] {episode.title[:50]}")
             else:
                 console.print(f"  [red]✗[/red] {episode.title[:50]}: {error}")
 
-        from podworm.config import get_audio_dir
+        from feedworm.config import get_audio_dir
         console.print(f"\n[bold]Audio saved to:[/bold] {get_audio_dir()}")
 
 
@@ -733,7 +733,7 @@ def reset(yes: bool):
     """Delete all data (db, audio, transcripts)."""
     import shutil
 
-    from podworm.config import get_audio_dir, get_db_path
+    from feedworm.config import get_audio_dir, get_db_path
 
     console.print(f"[bold red]This will delete:[/bold red]")
     console.print(f"  - Database: {get_db_path()}")
@@ -780,8 +780,8 @@ def reset_day(date_str: str | None, yes: bool):
 
     db = Database()
     targets = [
-        e for e in db.list_episodes()
-        if e.downloaded_at and e.downloaded_at.date() == target
+        e for e in db.list_content()
+        if e.acquired_at and e.acquired_at.date() == target
     ]
 
     if not targets:
@@ -790,7 +790,7 @@ def reset_day(date_str: str | None, yes: bool):
 
     files_to_delete: list[Path] = []
     for ep in targets:
-        for attr in ("transcript_path", "digest_path", "audio_path"):
+        for attr in ("text_path", "digest_path", "media_path"):
             p = getattr(ep, attr, None)
             if p:
                 files_to_delete.append(Path(p))
@@ -851,14 +851,14 @@ def clean(dry_run: bool, podcast: str | None):
     # Resolve podcast ID prefix
     podcast_id = None
     if podcast:
-        podcasts = db.list_podcasts()
+        podcasts = db.list_sources()
         match = next((p for p in podcasts if p.id.startswith(podcast)), None)
         if not match:
             console.print(f"[red]Podcast not found: {podcast}[/red]")
             sys.exit(1)
         podcast_id = match.id
 
-    episodes = db.list_episodes_to_clean(podcast_id)
+    episodes = db.list_content_to_clean(podcast_id)
 
     if not episodes:
         console.print("[yellow]No audio files to clean up.[/yellow]")
@@ -874,11 +874,11 @@ def clean(dry_run: bool, podcast: str | None):
     cleanable = []
 
     for ep in episodes:
-        path = Path(ep.audio_path)
+        path = Path(ep.media_path)
         if not path.exists():
             # File already gone — just clear the DB reference
             if not dry_run:
-                db.clear_audio_path(ep.id)
+                db.clear_media_path(ep.id)
             continue
         size = path.stat().st_size
         total_size += size
@@ -906,7 +906,7 @@ def clean(dry_run: bool, podcast: str | None):
     for ep, path, size in cleanable:
         try:
             path.unlink()
-            db.clear_audio_path(ep.id)
+            db.clear_media_path(ep.id)
             deleted += 1
             freed += size
         except OSError as e:
@@ -926,61 +926,61 @@ def digest(podcast: str | None, episode: str | None, limit: int, force: bool):
 
     if episode:
         # Digest specific episode
-        ep = db.get_episode(episode)
+        ep = db.get_content(episode)
         if not ep:
-            all_eps = db.list_episodes()
+            all_eps = db.list_content()
             ep = next((e for e in all_eps if e.id.startswith(episode)), None)
 
         if not ep:
             console.print(f"[red]Episode not found: {episode}[/red]")
             sys.exit(1)
 
-        if not ep.transcript_path:
-            console.print(f"[red]Episode not transcribed yet. Run 'podworm transcribe' first.[/red]")
+        if not ep.text_path:
+            console.print(f"[red]Episode not transcribed yet. Run 'feedworm transcribe' first.[/red]")
             sys.exit(1)
 
         if ep.digested_at and not force:
             console.print(f"[yellow]Episode already digested. Use --force to re-digest.[/yellow]")
             return
 
-        p = db.get_podcast(ep.podcast_id)
+        p = db.get_source(ep.source_id)
         to_digest = [(ep, p)]
     else:
         if force:
             # With force, get all transcribed episodes
-            all_eps = db.list_episodes()
-            all_transcribed = [e for e in all_eps if e.transcribed_at]
+            all_eps = db.list_content()
+            all_transcribed = [e for e in all_eps if e.text_ready_at]
             if podcast:
-                podcasts = db.list_podcasts()
+                podcasts = db.list_sources()
                 podcast_match = next((p for p in podcasts if p.id.startswith(podcast)), None)
                 if podcast_match:
-                    all_transcribed = [e for e in all_transcribed if e.podcast_id == podcast_match.id]
+                    all_transcribed = [e for e in all_transcribed if e.source_id == podcast_match.id]
             all_transcribed = all_transcribed[:limit]
         else:
-            all_transcribed = db.list_episodes_to_digest(limit=limit)
+            all_transcribed = db.list_content_to_digest(limit=limit)
             if podcast:
-                podcasts = db.list_podcasts()
+                podcasts = db.list_sources()
                 podcast_match = next((p for p in podcasts if p.id.startswith(podcast)), None)
                 if podcast_match:
-                    all_transcribed = [e for e in all_transcribed if e.podcast_id == podcast_match.id]
+                    all_transcribed = [e for e in all_transcribed if e.source_id == podcast_match.id]
 
         to_digest = []
         for ep in all_transcribed:
-            p = db.get_podcast(ep.podcast_id)
+            p = db.get_source(ep.source_id)
             if p:
                 to_digest.append((ep, p))
 
     if not to_digest:
-        console.print("[yellow]No episodes to digest. Transcribe episodes first with 'podworm transcribe'.[/yellow]")
+        console.print("[yellow]No episodes to digest. Transcribe episodes first with 'feedworm transcribe'.[/yellow]")
         return
 
     console.print(f"[bold]Digesting {len(to_digest)} episodes...[/bold]")
-    results = digest_episodes(to_digest)
+    results = digest_content(to_digest)
 
     success_count = 0
     for ep, path, error in results:
         if path:
-            db.mark_episode_digested(ep.id, str(path))
+            db.mark_content_digested(ep.id, str(path))
             success_count += 1
             console.print(f"  [green]✓[/green] {ep.title}")
         else:
@@ -1000,8 +1000,8 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
     """Run full daily pipeline: spotify-import → transcribe → digest → clean."""
     from datetime import date as date_type
 
-    from podworm.config import get_spotify_client_id, get_spotify_client_secret
-    from podworm.spotify import (
+    from feedworm.config import get_spotify_client_id, get_spotify_client_secret
+    from feedworm.spotify import (
         get_spotify_client,
         fetch_saved_episodes,
         resolve_spotify_episodes,
@@ -1054,12 +1054,12 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
                         continue
                     if existing_id:
                         # Re-queue for download if previously mapped but never downloaded
-                        existing_ep = db.get_episode(existing_id)
-                        if existing_ep and not existing_ep.downloaded_at:
+                        existing_ep = db.get_content(existing_id)
+                        if existing_ep and not existing_ep.acquired_at:
                             to_download_eps.append(existing_ep)
                         continue
-                    db.add_podcast(result.podcast)
-                    db.add_episode(result.rss_episode)
+                    db.add_source(result.podcast)
+                    db.add_content(result.rss_episode)
                     record_spotify_mapping(db, sp_ep.spotify_id, result.rss_episode.id)
                     imported += 1
                     to_download_eps.append(result.rss_episode)
@@ -1070,13 +1070,13 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
     # --- Step 1.5: Email import ---
     console.print(f"\n[bold]Step 1.5: Importing from email (date={date_filter})...[/bold]")
 
-    from podworm.config import (
+    from feedworm.config import (
         get_imap_host,
         get_imap_user,
         get_imap_password,
         get_email_allowed_sender,
     )
-    from podworm.email_import import import_from_email
+    from feedworm.email_import import import_from_email
 
     imap_user = get_imap_user()
     imap_password = get_imap_password()
@@ -1111,13 +1111,59 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
             console.print(f"  [red]Email import failed: {type(e).__name__}: {e}[/red]")
             console.print_exception(show_locals=False)
 
+    # --- Step 1.6: Article links from email ---
+    console.print(f"\n[bold]Step 1.6: Importing article links from email (date={date_filter})...[/bold]")
+    if not imap_user or not imap_password:
+        console.print("  [yellow]Skipping: IMAP credentials not configured[/yellow]")
+    else:
+        from feedworm.config import get_email_article_subject
+        from feedworm.email_import import import_articles_from_email
+
+        try:
+            article_results = import_articles_from_email(
+                db,
+                on_date=date_filter,
+                host=get_imap_host(),
+                user=imap_user,
+                password=imap_password,
+                allowed_sender=get_email_allowed_sender(),
+                subject_keyword=get_email_article_subject(),
+            )
+            to_extract_articles = []
+            if not article_results:
+                console.print("  [dim]No matching emails found[/dim]")
+            else:
+                colors = {"queued": "green", "dup": "dim", "error": "red", "no-url": "yellow"}
+                for r in article_results:
+                    color = colors.get(r.status, "white")
+                    console.print(
+                        f"  [{color}]{r.status:7}[/{color}] {r.subject[:50]}  {r.detail}"
+                    )
+                    if r.episode:
+                        to_extract_articles.append(r.episode)
+                queued = sum(1 for r in article_results if r.status == "queued")
+                console.print(f"  [green]Imported {queued} new articles[/green]")
+
+            if to_extract_articles:
+                from feedworm.article import extract_articles
+
+                console.print(f"\n  [bold]Extracting {len(to_extract_articles)} article(s)...[/bold]")
+                for content, path, error in extract_articles(db, to_extract_articles):
+                    if path:
+                        console.print(f"    [green]✓[/green] {content.title[:50]}")
+                    else:
+                        console.print(f"    [red]✗[/red] {content.url}: {error}")
+        except Exception as e:
+            console.print(f"  [red]Article email import failed: {type(e).__name__}: {e}[/red]")
+            console.print_exception(show_locals=False)
+
     # Download newly imported episodes
     if to_download_eps:
         console.print(f"\n  [bold]Downloading {len(to_download_eps)} episodes...[/bold]")
         results = download_episodes_sync(to_download_eps)
         for episode, path, error in results:
             if path:
-                db.mark_episode_downloaded(episode.id, str(path))
+                db.mark_content_acquired(episode.id, str(path))
                 console.print(f"    [green]✓[/green] {episode.title[:50]}")
             else:
                 console.print(f"    [red]✗[/red] {episode.title[:50]}: {error}")
@@ -1128,9 +1174,9 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
     # Re-fetch imported episodes so we pick up the audio_path set during download
     to_transcribe = []
     for ep in to_download_eps:
-        fresh_ep = db.get_episode(ep.id)
-        if fresh_ep and fresh_ep.audio_path and not fresh_ep.transcribed_at:
-            p = db.get_podcast(fresh_ep.podcast_id)
+        fresh_ep = db.get_content(ep.id)
+        if fresh_ep and fresh_ep.media_path and not fresh_ep.text_ready_at:
+            p = db.get_source(fresh_ep.source_id)
             if p:
                 to_transcribe.append((fresh_ep, p))
 
@@ -1138,7 +1184,7 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
         results = transcribe_episodes(to_transcribe)
         for ep, path, error in results:
             if path:
-                db.mark_episode_transcribed(ep.id, str(path))
+                db.mark_content_text(ep.id, str(path))
                 console.print(f"  [green]✓[/green] {ep.title[:50]}")
             else:
                 console.print(f"  [red]✗[/red] {ep.title[:50]}: {error}")
@@ -1147,20 +1193,20 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
 
     # --- Step 3: Digest ---
     console.print(f"\n[bold]Step 3: Generating digests...[/bold]")
-    to_digest_list = db.list_episodes_to_digest(limit=limit)
+    to_digest_list = db.list_content_to_digest(limit=limit)
     digest_paths: list[Path] = []
 
     if to_digest_list:
         to_digest = []
         for ep in to_digest_list:
-            p = db.get_podcast(ep.podcast_id)
+            p = db.get_source(ep.source_id)
             if p:
                 to_digest.append((ep, p))
 
-        results = digest_episodes(to_digest)
+        results = digest_content(to_digest)
         for ep, path, error in results:
             if path:
-                db.mark_episode_digested(ep.id, str(path))
+                db.mark_content_digested(ep.id, str(path))
                 digest_paths.append(path)
                 console.print(f"  [green]✓[/green] {ep.title[:50]}")
             else:
@@ -1171,19 +1217,19 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
     # --- Step 4: Clean ---
     if not skip_clean:
         console.print(f"\n[bold]Step 4: Cleaning audio files...[/bold]")
-        episodes_to_clean = db.list_episodes_to_clean()
+        episodes_to_clean = db.list_content_to_clean()
         deleted = 0
         for ep in episodes_to_clean:
-            path = Path(ep.audio_path)
+            path = Path(ep.media_path)
             if path.exists():
                 try:
                     path.unlink()
-                    db.clear_audio_path(ep.id)
+                    db.clear_media_path(ep.id)
                     deleted += 1
                 except OSError as e:
                     console.print(f"  [red]✗[/red] {path}: {e}")
             else:
-                db.clear_audio_path(ep.id)
+                db.clear_media_path(ep.id)
         if deleted:
             console.print(f"  [green]Deleted {deleted} audio files[/green]")
         else:
@@ -1191,51 +1237,20 @@ def daily(limit: int, date_str: str | None, skip_clean: bool, no_chat: bool, obs
 
     console.print("\n[bold green]Daily pipeline complete![/bold green]")
 
-    # --- Step 5: Summarize ---
-    if no_chat and not obsidian:
-        return
-
-    # Fall back to today's existing digests when none were newly generated
+    # --- Step 5: Summarize (combined podcast + article digest) ---
+    # Fall back to today's existing digests when none were newly generated.
     if not digest_paths:
-        all_eps = db.list_episodes()
         digest_paths = [
-            Path(e.digest_path) for e in all_eps
+            Path(e.digest_path) for e in db.list_content()
             if e.digest_path
-            and e.downloaded_at
-            and e.downloaded_at.date() == date_filter
+            and e.acquired_at
+            and e.acquired_at.date() == date_filter
         ]
-    parts = []
-    for dp in digest_paths:
-        try:
-            parts.append(dp.read_text())
-        except OSError:
-            pass
 
-    if not parts:
-        console.print("\n[dim]No digests to review.[/dim]")
-        return
-
-    instruction = (
-        "Here are today's podcast transcripts (in the system prompt). "
-        "Please summarize each one in the SAME language as the transcript, "
-        "with key topics, main discussion points, and notable quotes with timestamps."
+    _summarize_and_deliver(
+        digest_paths, date_filter,
+        obsidian=obsidian, email_flag=email_flag, no_chat=no_chat,
     )
-
-    if obsidian or email_flag:
-        summary = _claude_print(instruction, "\n---\n\n".join(parts))
-        if not summary:
-            console.print("  [red]Failed to generate summary[/red]")
-        else:
-            if obsidian:
-                note_path = _save_obsidian_note(summary, date_filter)
-                console.print(f"  [green]Saved Obsidian note:[/green] {note_path}")
-            if email_flag:
-                if _send_email(summary, date_filter):
-                    recipient = os.environ.get("EMAIL_TO") or os.environ.get("SMTP_USER", "")
-                    console.print(f"  [green]Sent email to[/green] {recipient}")
-    else:
-        console.print("\n[bold]Launching Claude Code...[/bold]")
-        _launch_claude(instruction, "\n---\n\n".join(parts))
 
 
 @cli.command()
@@ -1256,12 +1271,12 @@ def chat(date_str: str | None):
         date_filter = date_type.today()
 
     # Find transcribed episodes downloaded on the given date
-    all_eps = db.list_episodes()
+    all_eps = db.list_content()
     episodes = [
         e for e in all_eps
-        if e.transcript_path
-        and e.downloaded_at
-        and e.downloaded_at.date() == date_filter
+        if e.text_path
+        and e.acquired_at
+        and e.acquired_at.date() == date_filter
     ]
 
     if not episodes:
@@ -1270,7 +1285,7 @@ def chat(date_str: str | None):
 
     parts = []
     for ep in episodes:
-        path = Path(ep.transcript_path)
+        path = Path(ep.text_path)
         if path.exists():
             parts.append(path.read_text(encoding="utf-8"))
 
@@ -1289,6 +1304,96 @@ def chat(date_str: str | None):
 
 
 @cli.command()
+@click.argument("urls", nargs=-1)
+@click.option("--file", "-f", "url_file", type=click.Path(exists=True),
+              help="Read URLs from a file (one per line)")
+@click.option("--no-chat", is_flag=True, help="Skip launching Claude Code at the end")
+@click.option("--obsidian", is_flag=True, help="Summarize via claude --print and save to Obsidian")
+@click.option("--email", "email_flag", is_flag=True, help="Summarize via claude --print and email the result")
+def articles(urls: tuple[str, ...], url_file: str | None, no_chat: bool, obsidian: bool, email_flag: bool):
+    """Summarize a list of article links.
+
+    Ingest → extract text → digest → summarize, reusing the same delivery as
+    `daily` (interactive Claude Code, an Obsidian note, or email).
+
+        feedworm articles https://a.com/post https://b.com/story
+
+        feedworm articles -f links.txt --obsidian
+    """
+    from datetime import date as date_type
+
+    from feedworm.article import content_id_for, extract_articles, ingest_article_url
+
+    db = Database()
+
+    url_list = list(urls)
+    if url_file:
+        for line in Path(url_file).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                url_list.append(line)
+    # De-dupe, preserving order.
+    seen: set[str] = set()
+    url_list = [u for u in url_list if not (u in seen or seen.add(u))]
+
+    if not url_list:
+        console.print("[red]No URLs provided.[/red] Pass URLs as arguments or use --file.")
+        sys.exit(1)
+
+    # --- Ingest ---
+    console.print(f"[bold]Ingesting {len(url_list)} article link(s)...[/bold]")
+    to_extract = []
+    for url in url_list:
+        content = ingest_article_url(db, url)
+        if content.text_path:
+            console.print(f"  [dim]already extracted:[/dim] {url}")
+        else:
+            to_extract.append(content)
+
+    # --- Extract ---
+    if to_extract:
+        console.print(f"\n[bold]Extracting {len(to_extract)} article(s)...[/bold]")
+        for content, path, error in extract_articles(db, to_extract):
+            if path:
+                console.print(f"  [green]✓[/green] {content.title[:50]}")
+            else:
+                console.print(f"  [red]✗[/red] {content.url}: {error}")
+
+    # --- Digest ---
+    console.print("\n[bold]Generating digests...[/bold]")
+    to_digest = []
+    for content in db.list_content_to_digest():
+        if content.kind != "article":
+            continue
+        source = db.get_source(content.source_id)
+        if source:
+            to_digest.append((content, source))
+
+    digest_paths: list[Path] = []
+    if to_digest:
+        for content, path, error in digest_content(to_digest):
+            if path:
+                db.mark_content_digested(content.id, str(path))
+                digest_paths.append(path)
+                console.print(f"  [green]✓[/green] {content.title[:50]}")
+            else:
+                console.print(f"  [red]✗[/red] {content.title[:50]}: {error}")
+
+    # Fall back to already-digested articles for the requested URLs (re-runs).
+    if not digest_paths:
+        for url in url_list:
+            c = db.get_content(content_id_for(url))
+            if c and c.digest_path:
+                digest_paths.append(Path(c.digest_path))
+
+    # --- Summarize / deliver ---
+    _summarize_and_deliver(
+        digest_paths, date_type.today(),
+        obsidian=obsidian, email_flag=email_flag, no_chat=no_chat,
+    )
+
+
+@cli.command()
 @click.argument("podcast")
 @click.option("--limit", "-l", default=0, help="Max episodes to process (0=all)")
 @click.option("--skip-download", is_flag=True, help="Skip download, use existing transcripts")
@@ -1300,14 +1405,14 @@ def interview(podcast: str, limit: int, skip_download: bool):
 
     Examples:
 
-        podworm interview 日谈公园 --skip-download
+        feedworm interview 日谈公园 --skip-download
 
-        podworm interview abc123 -l 5
+        feedworm interview abc123 -l 5
     """
     db = Database()
 
     # --- Resolve podcast by prefix match ---
-    podcasts = db.list_podcasts()
+    podcasts = db.list_sources()
     pod = next((p for p in podcasts if p.id.startswith(podcast)), None)
 
     if not pod:
@@ -1329,9 +1434,9 @@ def interview(podcast: str, limit: int, skip_download: bool):
             try:
                 found_pod, found_eps = scrape_podcast_page(result["url"])
                 if podcast.lower() in found_pod.title.lower():
-                    db.add_podcast(found_pod)
+                    db.add_source(found_pod)
                     for ep in found_eps:
-                        db.add_episode(ep)
+                        db.add_content(ep)
                     pod = found_pod
                     console.print(f"  [green]✓[/green] Added: {pod.title} ({len(found_eps)} episodes)")
                     break
@@ -1344,9 +1449,9 @@ def interview(podcast: str, limit: int, skip_download: bool):
             for result in podcast_urls:
                 try:
                     found_pod, found_eps = scrape_podcast_page(result["url"])
-                    db.add_podcast(found_pod)
+                    db.add_source(found_pod)
                     for ep in found_eps:
-                        db.add_episode(ep)
+                        db.add_content(ep)
                     pod = found_pod
                     console.print(f"  [green]✓[/green] Added: {pod.title} ({len(found_eps)} episodes)")
                     break
@@ -1363,12 +1468,12 @@ def interview(podcast: str, limit: int, skip_download: bool):
         # --- Step 1: Sync all episodes from RSS ---
         console.print(f"\n[bold]Step 1: Syncing episodes from RSS...[/bold]")
         try:
-            episodes = fetch_episodes(pod.feed_url, pod.id)
+            episodes = fetch_episodes(pod.url, pod.id)
             new_count = 0
             for ep in episodes:
-                existing = db.get_episode(ep.id)
+                existing = db.get_content(ep.id)
                 if not existing:
-                    db.add_episode(ep)
+                    db.add_content(ep)
                     new_count += 1
             console.print(f"  [green]✓[/green] {len(episodes)} total, {new_count} new")
         except Exception as e:
@@ -1377,8 +1482,8 @@ def interview(podcast: str, limit: int, skip_download: bool):
 
         # --- Step 2: Download un-downloaded episodes ---
         console.print(f"\n[bold]Step 2: Downloading episodes...[/bold]")
-        all_eps = db.list_episodes(pod.id)
-        to_download = [e for e in all_eps if not e.downloaded_at and e.audio_url]
+        all_eps = db.list_content(pod.id)
+        to_download = [e for e in all_eps if not e.acquired_at and e.url]
         if limit > 0:
             to_download = to_download[:limit]
 
@@ -1387,7 +1492,7 @@ def interview(podcast: str, limit: int, skip_download: bool):
             results = download_episodes_sync(to_download)
             for episode, path, error in results:
                 if path:
-                    db.mark_episode_downloaded(episode.id, str(path))
+                    db.mark_content_acquired(episode.id, str(path))
                     console.print(f"    [green]✓[/green] {episode.title[:50]}")
                 else:
                     console.print(f"    [red]✗[/red] {episode.title[:50]}: {error}")
@@ -1397,10 +1502,10 @@ def interview(podcast: str, limit: int, skip_download: bool):
         # --- Step 3: Transcribe un-transcribed episodes ---
         console.print(f"\n[bold]Step 3: Transcribing episodes...[/bold]")
         # Re-fetch to pick up download paths
-        all_eps = db.list_episodes(pod.id)
+        all_eps = db.list_content(pod.id)
         to_transcribe = []
         for ep in all_eps:
-            if ep.audio_path and not ep.transcribed_at:
+            if ep.media_path and not ep.text_ready_at:
                 to_transcribe.append((ep, pod))
         if limit > 0:
             to_transcribe = to_transcribe[:limit]
@@ -1410,7 +1515,7 @@ def interview(podcast: str, limit: int, skip_download: bool):
             results = transcribe_episodes(to_transcribe)
             for ep, path, error in results:
                 if path:
-                    db.mark_episode_transcribed(ep.id, str(path))
+                    db.mark_content_text(ep.id, str(path))
                     console.print(f"    [green]✓[/green] {ep.title[:50]}")
                 else:
                     console.print(f"    [red]✗[/red] {ep.title[:50]}: {error}")
@@ -1486,7 +1591,7 @@ def copy(episode_id: str, clipboard: bool, show_digest: bool):
     db = Database()
 
     # Find episode
-    all_eps = db.list_episodes()
+    all_eps = db.list_content()
     episode = next((e for e in all_eps if e.id.startswith(episode_id)), None)
 
     if not episode:
@@ -1495,15 +1600,15 @@ def copy(episode_id: str, clipboard: bool, show_digest: bool):
 
     if show_digest:
         if not episode.digest_path:
-            console.print(f"[yellow]Episode not digested yet. Run 'podworm digest' first.[/yellow]")
+            console.print(f"[yellow]Episode not digested yet. Run 'feedworm digest' first.[/yellow]")
             sys.exit(1)
         file_path = Path(episode.digest_path)
         label = "Digest"
     else:
-        if not episode.transcript_path:
-            console.print(f"[yellow]Episode not transcribed yet. Run 'podworm transcribe' first.[/yellow]")
+        if not episode.text_path:
+            console.print(f"[yellow]Episode not transcribed yet. Run 'feedworm transcribe' first.[/yellow]")
             sys.exit(1)
-        file_path = Path(episode.transcript_path)
+        file_path = Path(episode.text_path)
         label = "Transcript"
 
     if not file_path.exists():
@@ -1523,6 +1628,59 @@ def copy(episode_id: str, clipboard: bool, show_digest: bool):
             click.echo(content)
     else:
         click.echo(content)
+
+
+SUMMARY_INSTRUCTION = (
+    "Here are today's items (in the system prompt) — podcast episode transcripts "
+    "and articles. Summarize each one in the SAME language as the source, with key "
+    "topics, main discussion points, and notable quotes/takeaways (with timestamps "
+    "for podcasts where available). The heading of each item indicates whether it is "
+    "a podcast episode or an article."
+)
+
+
+def _summarize_and_deliver(
+    digest_paths: list[Path],
+    date_filter,
+    *,
+    obsidian: bool = False,
+    email_flag: bool = False,
+    no_chat: bool = False,
+) -> None:
+    """Combine digests into one summary and deliver it (Obsidian/email/Claude Code).
+
+    Both podcast and article digests flow through here, producing a single
+    summary → one Obsidian note and/or one email.
+    """
+    if no_chat and not obsidian and not email_flag:
+        return
+
+    parts = []
+    for dp in digest_paths:
+        try:
+            parts.append(Path(dp).read_text())
+        except OSError:
+            pass
+
+    if not parts:
+        console.print("\n[dim]No digests to review.[/dim]")
+        return
+
+    if obsidian or email_flag:
+        summary = _claude_print(SUMMARY_INSTRUCTION, "\n---\n\n".join(parts))
+        if not summary:
+            console.print("  [red]Failed to generate summary[/red]")
+            return
+        if obsidian:
+            note_path = _save_obsidian_note(summary, date_filter)
+            console.print(f"  [green]Saved Obsidian note:[/green] {note_path}")
+        if email_flag:
+            if _send_email(summary, date_filter):
+                recipient = os.environ.get("EMAIL_TO") or os.environ.get("SMTP_USER", "")
+                console.print(f"  [green]Sent email to[/green] {recipient}")
+    else:
+        console.print("\n[bold]Launching Claude Code...[/bold]")
+        _launch_claude(SUMMARY_INSTRUCTION, "\n---\n\n".join(parts))
 
 
 def _claude_bin() -> str:
@@ -1606,7 +1764,7 @@ def _send_email(summary: str, date) -> bool:
     html_doc = _render_summary_html(summary)
 
     msg = EmailMessage()
-    msg["Subject"] = f"🎧 Podcast digest {date.isoformat()}"
+    msg["Subject"] = f"☕ Daily digest {date.isoformat()}"
     msg["From"] = user
     msg["To"] = os.environ.get("EMAIL_TO") or user
     msg.set_content(summary)
@@ -1647,15 +1805,15 @@ def _send_email(summary: str, date) -> bool:
 
 def _save_obsidian_note(summary: str, date) -> Path:
     """Save a summary as an Obsidian note and return the file path."""
-    from podworm.config import get_obsidian_vault_dir
+    from feedworm.config import get_obsidian_vault_dir
 
     vault = get_obsidian_vault_dir()
-    podcast_dir = vault / "Podcasts"
-    podcast_dir.mkdir(parents=True, exist_ok=True)
+    digests_dir = vault / "Digests"
+    digests_dir.mkdir(parents=True, exist_ok=True)
 
-    note_path = podcast_dir / f"{date.isoformat()}.md"
+    note_path = digests_dir / f"{date.isoformat()}.md"
     note_path.write_text(
-        f"---\ndate: {date.isoformat()}\ntags:\n  - podcast\n---\n\n{summary}\n",
+        f"---\ndate: {date.isoformat()}\ntags:\n  - podcast\n  - article\n---\n\n{summary}\n",
         encoding="utf-8",
     )
     return note_path

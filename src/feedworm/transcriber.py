@@ -6,8 +6,8 @@ from pathlib import Path
 from deepgram import DeepgramClient
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from podworm.config import get_transcripts_dir, get_deepgram_api_key
-from podworm.database import Episode, Podcast
+from feedworm.config import get_transcripts_dir, get_deepgram_api_key
+from feedworm.database import Content, Source
 
 
 def get_client() -> DeepgramClient:
@@ -134,8 +134,8 @@ def format_timestamp(seconds: float) -> str:
 
 
 def save_transcript(
-    episode: Episode,
-    podcast: Podcast,
+    episode: Content,
+    podcast: Source,
     text: str,
     segments: list[dict],
     output_dir: Path | None = None,
@@ -188,8 +188,8 @@ def save_transcript(
         lines.append(f"**Date:** {pub_date}")
     if duration_str:
         lines.append(f"**Duration:** {duration_str}")
-    if episode.audio_path:
-        lines.append(f"**Audio:** {Path(episode.audio_path).name}")
+    if episode.media_path:
+        lines.append(f"**Audio:** {Path(episode.media_path).name}")
 
     lines.extend([
         "",
@@ -226,8 +226,8 @@ def save_transcript(
 
 
 def transcribe_episode(
-    episode: Episode,
-    podcast: Podcast,
+    episode: Content,
+    podcast: Source,
 ) -> Path:
     """
     Transcribe an episode and save the transcript.
@@ -239,10 +239,10 @@ def transcribe_episode(
     Returns:
         Path to the saved transcript
     """
-    if not episode.audio_path:
-        raise ValueError(f"Episode {episode.id} has no audio_path")
+    if not episode.media_path:
+        raise ValueError(f"Content {episode.id} has no media_path")
 
-    audio_path = Path(episode.audio_path)
+    audio_path = Path(episode.media_path)
     if not audio_path.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
@@ -257,8 +257,8 @@ def transcribe_episode(
 
 
 def transcribe_episodes(
-    episodes: list[tuple[Episode, Podcast]],
-) -> list[tuple[Episode, Path | None, str | None]]:
+    episodes: list[tuple[Content, Source]],
+) -> list[tuple[Content, Path | None, str | None]]:
     """
     Transcribe multiple episodes with progress tracking.
 

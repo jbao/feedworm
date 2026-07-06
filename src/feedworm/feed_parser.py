@@ -11,7 +11,7 @@ from urllib.parse import quote_plus, parse_qs, urlparse, unquote
 import feedparser
 import httpx
 
-from podworm.database import Podcast, Episode
+from feedworm.database import Source, Content
 
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -73,7 +73,7 @@ def parse_opml(opml_path: Path) -> list[tuple[str, str, str | None]]:
     return podcasts
 
 
-def fetch_podcast_info(feed_url: str) -> Podcast:
+def fetch_podcast_info(feed_url: str) -> Source:
     """
     Fetch podcast metadata from RSS feed.
 
@@ -81,24 +81,24 @@ def fetch_podcast_info(feed_url: str) -> Podcast:
         feed_url: RSS feed URL
 
     Returns:
-        Podcast object with metadata
+        Source object with metadata
     """
     feed = feedparser.parse(feed_url)
 
     # Extract podcast ID from feed URL
     _, podcast_id = xiaoyuzhou_url_to_feed(feed_url)
 
-    return Podcast(
+    return Source(
         id=podcast_id,
         title=feed.feed.get("title", "Unknown"),
-        feed_url=feed_url,
+        url=feed_url,
         description=feed.feed.get("description") or feed.feed.get("subtitle"),
         author=feed.feed.get("author"),
         image_url=feed.feed.get("image", {}).get("href"),
     )
 
 
-def fetch_episodes(feed_url: str, podcast_id: str) -> list[Episode]:
+def fetch_episodes(feed_url: str, podcast_id: str) -> list[Content]:
     """
     Fetch episode list from RSS feed.
 
@@ -107,7 +107,7 @@ def fetch_episodes(feed_url: str, podcast_id: str) -> list[Episode]:
         podcast_id: ID of the podcast
 
     Returns:
-        List of Episode objects
+        List of Content objects
     """
     feed = feedparser.parse(feed_url)
     episodes = []
@@ -150,12 +150,12 @@ def fetch_episodes(feed_url: str, podcast_id: str) -> list[Episode]:
             duration_seconds = parse_duration(duration)
 
         episodes.append(
-            Episode(
+            Content(
                 id=episode_id,
-                podcast_id=podcast_id,
+                source_id=podcast_id,
                 title=entry.get("title", "Untitled"),
                 description=entry.get("summary") or entry.get("description"),
-                audio_url=audio_url,
+                url=audio_url,
                 duration_seconds=duration_seconds,
                 published_at=published_at,
             )
@@ -213,8 +213,8 @@ def _extract_next_data(html: str) -> dict:
     return json.loads(match.group(1))
 
 
-def _episode_from_web(ep_data: dict, podcast_id: str) -> Episode:
-    """Convert a web __NEXT_DATA__ episode dict to an Episode dataclass."""
+def _episode_from_web(ep_data: dict, podcast_id: str) -> Content:
+    """Convert a web __NEXT_DATA__ episode dict to an Content dataclass."""
     eid = ep_data["eid"]
     enclosure = ep_data.get("enclosure", {})
     media = ep_data.get("media", {})
@@ -233,31 +233,31 @@ def _episode_from_web(ep_data: dict, podcast_id: str) -> Episode:
         except (ValueError, TypeError):
             pass
 
-    return Episode(
+    return Content(
         id=eid,
-        podcast_id=podcast_id,
+        source_id=podcast_id,
         title=ep_data.get("title", "Untitled"),
         description=ep_data.get("description"),
-        audio_url=audio_url,
+        url=audio_url,
         duration_seconds=ep_data.get("duration"),
         published_at=published_at,
     )
 
 
-def _podcast_from_web(podcast_data: dict) -> Podcast:
-    """Convert a web __NEXT_DATA__ podcast dict to a Podcast dataclass."""
+def _podcast_from_web(podcast_data: dict) -> Source:
+    """Convert a web __NEXT_DATA__ podcast dict to a Source dataclass."""
     pid = podcast_data["pid"]
-    return Podcast(
+    return Source(
         id=pid,
         title=podcast_data.get("title", "Unknown"),
-        feed_url=f"https://www.xiaoyuzhoufm.com/podcast/{pid}",
+        url=f"https://www.xiaoyuzhoufm.com/podcast/{pid}",
         description=podcast_data.get("description"),
         author=podcast_data.get("author"),
         image_url=podcast_data.get("image", {}).get("smallPicUrl"),
     )
 
 
-def scrape_episode_page(episode_url: str) -> tuple[Podcast, Episode]:
+def scrape_episode_page(episode_url: str) -> tuple[Source, Content]:
     """Fetch an episode page and extract podcast + episode data from __NEXT_DATA__."""
     response = httpx.get(episode_url, headers=BROWSER_HEADERS, follow_redirects=True)
     response.raise_for_status()
@@ -271,7 +271,7 @@ def scrape_episode_page(episode_url: str) -> tuple[Podcast, Episode]:
     return podcast, episode
 
 
-def scrape_podcast_page(podcast_url: str) -> tuple[Podcast, list[Episode]]:
+def scrape_podcast_page(podcast_url: str) -> tuple[Source, list[Content]]:
     """Fetch a podcast page and extract podcast + episodes from __NEXT_DATA__."""
     response = httpx.get(podcast_url, headers=BROWSER_HEADERS, follow_redirects=True)
     response.raise_for_status()

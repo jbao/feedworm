@@ -4,13 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Podcast management and transcription CLI tool for 小宇宙 (Xiaoyuzhou) and Spotify podcasts. Downloads audio, transcribes via Deepgram, and generates digests for review in Claude Code.
+Content-digest CLI tool (**feedworm**). Ingests podcast episodes (小宇宙/Xiaoyuzhou, Spotify) and web articles, turns each into text (transcribe audio / extract HTML), writes a markdown digest, and generates summaries for review in Claude Code, an Obsidian note, or email.
+
+The project was renamed from `podworm`; the package now lives in `src/feedworm/` and the CLI is `feedworm`. Legacy `PODWORM_*` env vars and the `~/.local/share/podworm` data dir are still read as fallbacks so existing data isn't orphaned.
 
 ## Commands
 
-Run with `uv run podworm <command>`. Key commands:
+Run with `uv run feedworm <command>`. Key commands:
 
-- `daily` — Full pipeline: Spotify import → email import → download → transcribe → digest → clean → launch Claude Code
+- `daily` — Full pipeline: Spotify import → podcast email import → article-link email import → download → transcribe/extract → digest → clean → summarize (one combined digest)
+- `articles [URLS... | -f FILE]` — Summarize a list of article links (ingest → extract → digest → summarize). Flags `--obsidian` / `--email` / `--no-chat` mirror `daily`.
 - `reset -y` — Wipe all data (db, audio, transcripts)
 - `chat -d YYYY-MM-DD` — Launch Claude Code with transcripts from a date
 - `transcribe` — Transcribe downloaded episodes (standalone)
@@ -20,27 +23,36 @@ Run with `uv run podworm <command>`. Key commands:
 ## Environment Variables
 
 Required: `DEEPGRAM_API_KEY`
-Optional: `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `PODWORM_DATA_DIR`
-Email ingestion (all optional; daily skips this step if creds unset): `IMAP_USER`, `IMAP_PASSWORD` (Apple ID app-specific password), `IMAP_HOST` (default `imap.mail.me.com`), `EMAIL_ALLOWED_SENDER` (default `jie.bao@gmail.com`)
+Optional: `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `FEEDWORM_DATA_DIR` (legacy: `PODWORM_DATA_DIR`), `FEEDWORM_OBSIDIAN_VAULT` (legacy: `PODWORM_OBSIDIAN_VAULT`)
+Email ingestion (all optional; daily skips these steps if creds unset): `IMAP_USER`, `IMAP_PASSWORD` (Apple ID app-specific password), `IMAP_HOST` (default `imap.mail.me.com`), `EMAIL_ALLOWED_SENDER` (default `jie.bao@gmail.com`), `EMAIL_ARTICLE_SUBJECT` (default `read` — subject keyword marking an email as carrying article links)
+Email-out summary: `SMTP_USER`, `SMTP_PASS`, `EMAIL_TO`
 
 ## Email-based ingestion
 
-`daily` polls the iCloud Mail account given by `IMAP_USER` for messages received on the run date that match: sender == `EMAIL_ALLOWED_SENDER` AND subject contains `xiaoyuzhou` (case-insensitive). For each match, `xiaoyuzhoufm.com/episode/...` URLs in the body are extracted and fed through `feed_parser.scrape_episode_page` into the standard pipeline. Processed messages are marked `\Seen`; DB metadata key `email:<Message-ID>:<url>` is the authoritative dedup. Standard IMAP only (no Gmail extensions), so `IMAP_HOST` can be repointed at any IMAPS:993 server. See `src/podworm/email_import.py`.
+`daily` polls the IMAP account (`IMAP_USER`, iCloud Mail by default) for messages received on the run date from `EMAIL_ALLOWED_SENDER`, matched by subject keyword:
+
+- **Podcasts** (subject contains `xiaoyuzhou`): `xiaoyuzhoufm.com/episode|podcast/...` URLs are extracted and fed through `feed_parser.scrape_episode_page` into the download/transcribe pipeline.
+- **Articles** (subject contains `EMAIL_ARTICLE_SUBJECT`): any `https?://` links in the body are extracted (filtered against asset/homepage URLs) and fed through `article.extract_article`.
+
+Both paths share the IMAP plumbing in `email_import.py` (`_run_import`). Processed messages are marked `\Seen`; DB metadata key `email:<Message-ID>:<url>` is the authoritative dedup. Standard IMAP only (no Gmail extensions), so `IMAP_HOST` can be repointed at any IMAPS:993 server.
 
 ## Architecture
 
-All source in `src/podworm/`. CLI entry point: `cli.py` (Click framework, Rich for UI).
+All source in `src/feedworm/`. CLI entry point: `cli.py` (Click framework, Rich for UI).
 
-Pipeline stages, each tracked by timestamp columns in SQLite (`~/.local/share/podworm/podcasts.db`):
-1. **Import** — `feed_parser.py` / `spotify.py` → adds Podcast + Episode rows
-2. **Download** — `downloader.py` → async httpx, resume support, sets `downloaded_at` + `audio_path`
-3. **Transcribe** — `transcriber.py` → Deepgram nova-2 with `detect_language=True`, sets `transcribed_at` + `transcript_path`
-4. **Digest** — `digest.py` → saves transcript with metadata headers as `_digest.md`, sets `digested_at`
-5. **Clean** — deletes audio for transcribed episodes
+The data model is a unified **`Content`** item (podcast episode OR article) belonging to a **`Source`** (podcast feed OR website), discriminated by a `kind` field (`podcast`/`article`, `podcast`/`website`). Pipeline stages are tracked by timestamp columns in SQLite (`~/.local/share/feedworm/podcasts.db`) and dispatch on `kind`:
 
-Database ORM: `database.py` with `Podcast`/`Episode` dataclasses over `sqlite-utils`.
+1. **Import** — `feed_parser.py` / `spotify.py` (podcasts) or `article.ingest_article_url` (articles) → adds Source + Content rows
+2. **Acquire text** —
+   - podcast: **Download** (`downloader.py`, async httpx, sets `acquired_at` + `media_path`) → **Transcribe** (`transcriber.py`, Deepgram nova-2, sets `text_ready_at` + `text_path`)
+   - article: **Extract** (`article.py`, trafilatura with httpx fallback, sets `text_ready_at` + `text_path` in one step)
+3. **Digest** — `digest.py` → `save_digest`/`digest_content` write a kind-aware header + text as `{id}_digest.md`, set `digested_at`
+4. **Summarize/deliver** — `cli._summarize_and_deliver` feeds all of the day's digests (both kinds) to `claude --print`, delivering one combined Obsidian note and/or email (subject `☕ Daily digest {date}`)
+5. **Clean** — deletes media (`media_path`) for podcast content only
 
-Output files: `~/.local/share/podworm/transcripts/{podcast_id}/{episode_id}.md`
+Database ORM: `database.py` with `Content`/`Source` dataclasses over `sqlite-utils`. `_migrate_legacy_schema` renames the pre-rename `podcasts`/`episodes` tables and their audio-centric columns in place (idempotent), preserving ids so existing metadata keys stay valid.
+
+Output files: `~/.local/share/feedworm/transcripts/{source_id}/{content_id}.md`
 
 ## No automated test suite
 

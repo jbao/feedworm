@@ -14,12 +14,12 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from podworm.config import get_audio_dir
-from podworm.database import Episode
+from feedworm.config import get_audio_dir
+from feedworm.database import Content
 
 
 async def download_episode(
-    episode: Episode,
+    episode: Content,
     output_dir: Path | None = None,
     progress: Progress | None = None,
     task_id: TaskID | None = None,
@@ -28,7 +28,7 @@ async def download_episode(
     Download episode audio file.
 
     Args:
-        episode: Episode to download
+        episode: Content to download
         output_dir: Directory to save audio (default: data/audio)
         progress: Rich Progress instance for progress tracking
         task_id: Rich task ID for progress updates
@@ -38,14 +38,14 @@ async def download_episode(
     """
     output_dir = output_dir or get_audio_dir()
 
-    # Create podcast directory
-    podcast_dir = output_dir / episode.podcast_id
+    # Create source directory
+    podcast_dir = output_dir / episode.source_id
     podcast_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine file extension from URL
     ext = ".mp3"
-    if "." in episode.audio_url.split("/")[-1]:
-        url_ext = "." + episode.audio_url.split(".")[-1].split("?")[0]
+    if "." in episode.url.split("/")[-1]:
+        url_ext = "." + episode.url.split(".")[-1].split("?")[0]
         if url_ext in [".mp3", ".m4a", ".wav", ".ogg", ".aac"]:
             ext = url_ext
 
@@ -63,7 +63,7 @@ async def download_episode(
         timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0),
     ) as client:
         # Get file size
-        head_response = await client.head(episode.audio_url)
+        head_response = await client.head(episode.url)
         total_size = int(head_response.headers.get("content-length", 0))
 
         # Resume support
@@ -76,7 +76,7 @@ async def download_episode(
             headers["Range"] = f"bytes={start_byte}-"
 
         # Download
-        async with client.stream("GET", episode.audio_url, headers=headers) as response:
+        async with client.stream("GET", episode.url, headers=headers) as response:
             response.raise_for_status()
 
             # Update progress bar total
@@ -98,10 +98,10 @@ async def download_episode(
 
 
 async def download_episodes(
-    episodes: list[Episode],
+    episodes: list[Content],
     output_dir: Path | None = None,
     max_concurrent: int = 3,
-) -> list[tuple[Episode, Path | None, str | None]]:
+) -> list[tuple[Content, Path | None, str | None]]:
     """
     Download multiple episodes concurrently with progress tracking.
 
@@ -113,7 +113,7 @@ async def download_episodes(
     Returns:
         List of tuples: (episode, path_if_success, error_if_failed)
     """
-    results: list[tuple[Episode, Path | None, str | None]] = []
+    results: list[tuple[Content, Path | None, str | None]] = []
 
     if not episodes:
         return results
@@ -132,7 +132,7 @@ async def download_episodes(
 
         semaphore = asyncio.Semaphore(max_concurrent)
 
-        async def download_with_progress(episode: Episode) -> tuple[Episode, Path | None, str | None]:
+        async def download_with_progress(episode: Content) -> tuple[Content, Path | None, str | None]:
             async with semaphore:
                 task_id = progress.add_task(
                     f"[cyan]{episode.title[:40]}...",
@@ -157,9 +157,9 @@ async def download_episodes(
 
 
 def download_episodes_sync(
-    episodes: list[Episode],
+    episodes: list[Content],
     output_dir: Path | None = None,
     max_concurrent: int = 3,
-) -> list[tuple[Episode, Path | None, str | None]]:
+) -> list[tuple[Content, Path | None, str | None]]:
     """Synchronous wrapper for download_episodes."""
     return asyncio.run(download_episodes(episodes, output_dir, max_concurrent))
