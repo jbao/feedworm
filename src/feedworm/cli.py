@@ -796,18 +796,18 @@ def reset_day(date_str: str | None, yes: bool):
                 files_to_delete.append(Path(p))
 
     mapping_count = db.db["metadata"].count_where(
-        "key LIKE 'spotify:%' AND value IN ({})".format(
+        "(key LIKE 'spotify:%' OR key LIKE 'email:%') AND value IN ({})".format(
             ",".join("?" for _ in targets)
         ),
         [ep.id for ep in targets],
     ) if targets else 0
 
     console.print(f"[bold red]This will delete for {target.isoformat()}:[/bold red]")
-    console.print(f"  - {len(targets)} episode row(s)")
+    console.print(f"  - {len(targets)} content row(s)")
     for ep in targets:
         console.print(f"    • {ep.title[:70]}")
     console.print(f"  - {len(files_to_delete)} file(s) on disk")
-    console.print(f"  - {mapping_count} Spotify mapping(s)")
+    console.print(f"  - {mapping_count} import mapping(s) (Spotify/email)")
 
     if not yes:
         click.confirm("\nAre you sure?", abort=True)
@@ -821,23 +821,23 @@ def reset_day(date_str: str | None, yes: bool):
             console.print(f"  [red]✗[/red] {path}: {e}")
 
     deleted_mappings = 0
-    deleted_episodes = 0
+    deleted_content = 0
     for ep in targets:
         before = db.db["metadata"].count_where(
-            "key LIKE 'spotify:%' AND value = ?", [ep.id]
+            "(key LIKE 'spotify:%' OR key LIKE 'email:%') AND value = ?", [ep.id]
         )
         db.db["metadata"].delete_where(
-            "key LIKE 'spotify:%' AND value = ?", [ep.id]
+            "(key LIKE 'spotify:%' OR key LIKE 'email:%') AND value = ?", [ep.id]
         )
         deleted_mappings += before
-        db.db["episodes"].delete_where("id = ?", [ep.id])
-        deleted_episodes += 1
+        db.db["content"].delete_where("id = ?", [ep.id])
+        deleted_content += 1
 
     db.db.conn.commit()
 
     console.print(
-        f"\n[green]Deleted {deleted_episodes} episode(s), "
-        f"{deleted_files} file(s), {deleted_mappings} Spotify mapping(s).[/green]"
+        f"\n[green]Deleted {deleted_content} content row(s), "
+        f"{deleted_files} file(s), {deleted_mappings} import mapping(s).[/green]"
     )
 
 
