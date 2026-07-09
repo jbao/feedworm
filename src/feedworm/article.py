@@ -56,14 +56,8 @@ def source_id_for(url: str) -> str:
 # --- Extraction ---
 
 
-def _fallback_extract(url: str) -> tuple[str | None, str | None]:
+def _fallback_extract(html: str) -> tuple[str | None, str | None]:
     """Best-effort extraction without trafilatura: strip tags from the HTML."""
-    try:
-        resp = httpx.get(url, headers=BROWSER_HEADERS, follow_redirects=True, timeout=30)
-        resp.raise_for_status()
-    except httpx.HTTPError:
-        return None, None
-    html = resp.text
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
     title = title_match.group(1).strip() if title_match else None
     # Drop scripts/styles, then all tags, then collapse whitespace.
@@ -73,35 +67,51 @@ def _fallback_extract(url: str) -> tuple[str | None, str | None]:
     return (body or None), title
 
 
-def extract_article(url: str) -> ExtractedArticle:
-    """Fetch a URL and extract the main article text + metadata."""
+def _extract_pdf(data: bytes, url: str) -> ExtractedArticle:
+    """Extract text + metadata from PDF bytes (no OCR — scanned PDFs fail)."""
+    import io
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    text = "\n\n".join(page.extract_text() or "" for page in reader.pages).strip()
+    if not text:
+        raise ValueError(
+            f"Could not extract text from PDF {url} (scanned/no text layer?)"
+        )
+    meta = reader.metadata or {}
+    title = (meta.title or "").strip() or url
+    author = (meta.author or "").strip() or None
+    return ExtractedArticle(title=title, text=text, author=author)
+
+
+def _extract_html(html: str, url: str) -> ExtractedArticle:
+    """Extract the main article text + metadata from an HTML string."""
     import trafilatura
 
     text = title = author = None
     published_at: datetime | None = None
 
-    downloaded = trafilatura.fetch_url(url)
-    if downloaded:
-        raw = trafilatura.extract(
-            downloaded,
-            output_format="json",
-            with_metadata=True,
-            include_comments=False,
-            include_tables=True,
-        )
-        if raw:
-            obj = json.loads(raw)
-            text = obj.get("text")
-            title = obj.get("title")
-            author = obj.get("author")
-            if obj.get("date"):
-                try:
-                    published_at = datetime.fromisoformat(obj["date"])
-                except (ValueError, TypeError):
-                    published_at = None
+    raw = trafilatura.extract(
+        html,
+        output_format="json",
+        with_metadata=True,
+        include_comments=False,
+        include_tables=True,
+    )
+    if raw:
+        obj = json.loads(raw)
+        text = obj.get("text")
+        title = obj.get("title")
+        author = obj.get("author")
+        if obj.get("date"):
+            try:
+                published_at = datetime.fromisoformat(obj["date"])
+            except (ValueError, TypeError):
+                published_at = None
 
     if not text:
-        text, title = _fallback_extract(url)
+        text, title = _fallback_extract(html)
 
     if not text or not text.strip():
         raise ValueError(f"Could not extract article text from {url}")
@@ -112,6 +122,25 @@ def extract_article(url: str) -> ExtractedArticle:
         published_at=published_at,
         author=author,
     )
+
+
+def extract_article(url: str) -> ExtractedArticle:
+    """Fetch a URL and extract text + metadata, handling HTML and PDF sources.
+
+    PDFs are detected by Content-Type or the ``%PDF-`` magic bytes rather than
+    by URL extension, so PDFs served without a ``.pdf`` suffix still work.
+    """
+    try:
+        resp = httpx.get(url, headers=BROWSER_HEADERS, follow_redirects=True, timeout=30)
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        raise ValueError(f"Could not extract article text from {url}") from e
+
+    content_type = resp.headers.get("content-type", "").lower()
+    if "application/pdf" in content_type or resp.content[:5] == b"%PDF-":
+        return _extract_pdf(resp.content, url)
+
+    return _extract_html(resp.text, url)
 
 
 # --- Ingestion ---

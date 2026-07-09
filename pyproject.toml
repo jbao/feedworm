@@ -16,6 +16,7 @@ dependencies = [
     "edge-tts>=7.2.7",
     "python-dotenv>=1.0.0",
     "trafilatura>=1.12.0",
+    "pypdf>=5.0.0",
 ]
 
 [project.scripts]

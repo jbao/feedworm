@@ -33,9 +33,11 @@ URL_RE = re.compile(
 # stray period/paren.
 ARTICLE_URL_RE = re.compile(r"""https?://[^\s<>"'\)\]]+""")
 
+# Note: .pdf is intentionally NOT here — PDF links are valid article sources.
+# extract_article detects PDFs by content-type/magic bytes, not extension.
 _ASSET_EXTS = (
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
-    ".css", ".js", ".woff", ".woff2", ".ttf", ".mp4", ".pdf",
+    ".css", ".js", ".woff", ".woff2", ".ttf", ".mp4",
 )
 
 
