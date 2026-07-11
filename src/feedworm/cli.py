@@ -1632,12 +1632,14 @@ def copy(episode_id: str, clipboard: bool, show_digest: bool):
 
 SUMMARY_INSTRUCTION = (
     "Here are today's items (in the system prompt) — podcast episode transcripts "
-    "and articles. Summarize each one in the SAME language as the source, with key "
-    "topics, main discussion points, and notable quotes/takeaways (with timestamps "
-    "for podcasts where available). The heading of each item indicates whether it is "
-    "a podcast episode or an article. For each article, include a link to the "
-    "original article — use the value from that item's `**URL:**` header line — "
-    "under the article's heading (e.g. a 'Source:' line)."
+    "and articles. Summarize each one with key topics, main discussion points, and "
+    "notable quotes/takeaways (with timestamps for podcasts where available). "
+    "Each item's `**Language:**` header line states its detected original language: "
+    "write that item's ENTIRE summary in that exact language — do not translate to "
+    "another language. The heading of each item indicates whether it is a podcast "
+    "episode or an article. For each article, include a link to the original "
+    "article — use the value from that item's `**URL:**` header line — under the "
+    "article's heading (e.g. a 'Source:' line)."
 )
 
 

@@ -7,6 +7,31 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from feedworm.config import get_transcripts_dir
 from feedworm.database import Content, Source
 
+_LANG_NAMES = {
+    "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
+    "fr": "French", "de": "German", "es": "Spanish", "it": "Italian",
+    "pt": "Portuguese", "ru": "Russian", "ar": "Arabic", "hi": "Hindi",
+    "nl": "Dutch", "sv": "Swedish", "tr": "Turkish",
+}
+
+
+def detect_language(text: str) -> str | None:
+    """Deterministically detect the language of `text`.
+
+    Returns a human-readable name (e.g. "Chinese"), the ISO code if unmapped,
+    or None if the text is empty or detection fails.
+    """
+    sample = text.strip()
+    if not sample:
+        return None
+    try:
+        import py3langid as langid
+
+        code, _ = langid.classify(sample[:5000])
+    except Exception:
+        return None
+    return _LANG_NAMES.get(code, code)
+
 
 def save_digest(
     content: Content,
@@ -27,6 +52,8 @@ def save_digest(
     if content.published_at:
         pub_date = content.published_at.strftime("%Y-%m-%d")
 
+    language = detect_language(digest_text)
+
     if content.kind == "article":
         lines = [
             f"# Article: {content.title}",
@@ -42,6 +69,8 @@ def save_digest(
         ]
     if pub_date:
         lines.append(f"**Date:** {pub_date}")
+    if language:
+        lines.append(f"**Language:** {language}")
     lines.extend([
         "",
         "---",
