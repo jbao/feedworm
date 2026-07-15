@@ -16,6 +16,7 @@ Run with `uv run feedworm <command>`. Key commands:
 - `articles [URLS... | -f FILE]` — Summarize a list of article links (ingest → extract → digest → summarize). Flags `--obsidian` / `--email` / `--no-chat` mirror `daily`.
 - `reset -y` — Wipe all data (db, audio, transcripts)
 - `chat -d YYYY-MM-DD` — Launch Claude Code with transcripts from a date
+- `shownotes <AUDIO_PATH>` — Generate publishable shownotes (title, summary, timestamped chapters, takeaways, links) from a local recording. Standalone: reuses `transcribe_audio` + `claude --print`, bypasses the feed/DB pipeline. Flags: `--language/-L`, `--output/-o`.
 - `transcribe` — Transcribe downloaded episodes (standalone)
 - `sync` — Download new episodes from RSS feeds
 - `grab <podcast> <episode>` — Search and download a specific episode

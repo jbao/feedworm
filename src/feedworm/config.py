@@ -33,6 +33,11 @@ def get_transcripts_dir() -> Path:
     return get_data_dir() / "transcripts"
 
 
+def get_shownotes_dir() -> Path:
+    """Get the directory for generated shownotes."""
+    return get_data_dir() / "shownotes"
+
+
 def get_db_path() -> Path:
     """Get the path to the SQLite database."""
     return get_data_dir() / "podcasts.db"
@@ -113,3 +118,4 @@ def ensure_dirs() -> None:
     get_data_dir().mkdir(parents=True, exist_ok=True)
     get_audio_dir().mkdir(parents=True, exist_ok=True)
     get_transcripts_dir().mkdir(parents=True, exist_ok=True)
+    get_shownotes_dir().mkdir(parents=True, exist_ok=True)

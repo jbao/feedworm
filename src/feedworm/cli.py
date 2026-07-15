@@ -14,7 +14,11 @@ from rich.console import Console
 load_dotenv()
 from rich.table import Table
 
-from feedworm.config import get_interviews_dir, get_transcripts_dir
+from feedworm.config import (
+    get_interviews_dir,
+    get_shownotes_dir,
+    get_transcripts_dir,
+)
 from feedworm.database import Database
 from feedworm.feed_parser import (
     parse_opml,
@@ -27,7 +31,7 @@ from feedworm.feed_parser import (
 )
 from feedworm.digest import digest_content
 from feedworm.downloader import download_episodes_sync
-from feedworm.transcriber import transcribe_episodes
+from feedworm.transcriber import format_timestamp, transcribe_audio, transcribe_episodes
 
 console = Console()
 
@@ -288,6 +292,55 @@ def transcribe(podcast: str | None, episode: str | None, limit: int):
             console.print(f"  [red]✗[/red] {ep.title}: {error}")
 
     console.print(f"\n[green]Transcribed {success_count}/{len(to_transcribe)} episodes.[/green]")
+
+
+@cli.command()
+@click.argument(
+    "audio_path", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
+@click.option(
+    "--language", "-L",
+    help="ISO language code (e.g. zh, en). Omit to let Deepgram auto-detect.",
+)
+@click.option(
+    "--output", "-o", "output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Where to write the shownotes markdown (default: shownotes data dir).",
+)
+def shownotes(audio_path: Path, language: str | None, output: Path | None):
+    """Generate publishable shownotes from a local audio recording."""
+    console.print(f"[bold]Transcribing[/bold] {audio_path.name}...")
+    with console.status("Transcribing via Deepgram…", spinner="dots"):
+        text, segments = transcribe_audio(audio_path, language=language)
+
+    if segments:
+        transcript = "\n".join(
+            f"{format_timestamp(seg['start'])} {seg['text'].strip()}"
+            for seg in segments
+        )
+    else:
+        transcript = text
+
+    if not transcript.strip():
+        console.print("[red]Transcription produced no text.[/red]")
+        sys.exit(1)
+
+    # Persist the (paid) transcription first, so a failure of the LLM step below
+    # never discards it.
+    out_path = output or (get_shownotes_dir() / f"{audio_path.stem}.md")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path = out_path.with_name(f"{out_path.stem}_transcript.md")
+    transcript_path.write_text(transcript, encoding="utf-8")
+    console.print(f"[dim]Transcript:[/dim] {transcript_path}")
+
+    md = _claude_print(SHOWNOTES_INSTRUCTION, transcript)
+    if not md:
+        console.print("[red]Failed to generate shownotes.[/red]")
+        sys.exit(1)
+
+    out_path.write_text(md, encoding="utf-8")
+    console.print(f"\n[green]Shownotes:[/green] {out_path}\n")
+    console.print(md)
 
 
 @cli.command()
@@ -1640,6 +1693,25 @@ SUMMARY_INSTRUCTION = (
     "episode or an article. For each article, include a link to the original "
     "article — use the value from that item's `**URL:**` header line — under the "
     "article's heading (e.g. a 'Source:' line)."
+)
+
+
+SHOWNOTES_INSTRUCTION = (
+    "The system prompt contains the timestamped transcript of a single audio "
+    "recording — each line is prefixed with an `[HH:MM:SS]` timestamp. Write "
+    "publishable shownotes for it in Markdown, with these sections in order:\n"
+    "1. A one-line suggested episode title (as an H1 heading).\n"
+    "2. A 1–2 paragraph episode summary.\n"
+    "3. A '## Chapters' section: a bulleted list of the main segments, each as "
+    "`[HH:MM:SS] Chapter title`, using the timestamps from the transcript.\n"
+    "4. A '## Key takeaways' section: the main topics and points as bullets.\n"
+    "5. A '## People mentioned' section listing any guests or people referenced "
+    "(omit the section if none).\n"
+    "6. A '## Links & resources' section listing any URLs, books, products, or "
+    "resources mentioned (omit the section if none).\n"
+    "Write the ENTIRE output in the transcript's original language — do not "
+    "translate to another language. Output only the shownotes Markdown, with no "
+    "preamble or commentary."
 )
 
 
